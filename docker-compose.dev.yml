@@ -1,0 +1,27 @@
+version: '3.8'
+services:
+  web:
+    image: simple-thought-share-app:dev  # Name of the image for the web service
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=dev
+    depends_on:
+      - db
+      - redis
+  db:
+    image: mysql:latest  # Name of the image for the database
+    environment:
+      MYSQL_ROOT_PASSWORD: adminroot
+      MYSQL_DATABASE: messages
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3306:3306"
+    volumes:
+      - /Database/dev:/var/lib/mysql
+  redis:
+    image: redis:latest  # Name of the image for Redis
+    ports:
+      - "6379:6379"
