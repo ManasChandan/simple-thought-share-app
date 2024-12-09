@@ -5,19 +5,49 @@ and potentially other functionalities related to message management.
 
 import time
 import json
+import os
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 import mysql.connector
 import redis
 
+def retry(retries=3, delay=10):
+    """
+    Retry decorator for functions that may raise exceptions.
+
+    Args:
+        retries: Number of retries to attempt.
+        delay: Fixed delay in seconds between retries.
+
+    Returns:
+        The decorated function.
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            attempt = 0
+            raised_exception = None
+            while attempt < retries:
+                try:
+                    return func(*args, **kwargs)
+                except mysql.connector.Error as e:
+                    attempt += 1
+                    time.sleep(delay)
+                    raised_exception = e   
+            raise raised_exception
+        return wrapper
+    return decorator
+
 class AppState:
     """
     Class to store the various connections
     """
+    @retry(retries=3, delay=10)
     def __init__(self):
+        print("127.0.0.1" if os.environ.get("env", "local_run") == "local_run" else "db")
         self.mysql_db = db = mysql.connector.connect(
-        host="db",  # This is the service name in Docker Compose
+        host="127.0.0.1" if os.environ.get("ENV", "local_run") == "local_run" else "db",  # This is the service name in Docker Compose
+        port="3306",
         user="user",
         password="password",
         database="messages"
@@ -38,7 +68,8 @@ class AppState:
         db.commit()
         cursor.close()
 
-        self.redis_client = redis.StrictRedis(host="redis", port=6379, decode_responses=True)
+        self.redis_client = redis.StrictRedis(host="127.0.0.1" if os.environ.get("ENV", "local_run") == "local_run" else "redis", 
+                                              port=6379, decode_responses=True)
     
     def health_check(self):
         """
@@ -62,8 +93,6 @@ async def startup():
     """
     Creates the object for the app state and stores the connection
     """
-    #waiting for 5s as in my local system things are slightly slow
-    time.sleep(5)
     app.state = AppState()
 
 @app.on_event("shutdown")
@@ -117,7 +146,8 @@ def fetch_messages(timestamp: str):
     """
     try:
         # Fetch from Redis
-        utc_timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").timestamp()
+        utc_timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc).timestamp()
+        print(utc_timestamp)
         redis_messages = app.state.redis_client.zrangebyscore("messages", "-inf", utc_timestamp, start=0, num=5)
         if redis_messages:
             messages = [json.loads(msg) for msg in redis_messages]
@@ -134,9 +164,9 @@ def fetch_messages(timestamp: str):
         """
         cursor.execute(query, (timestamp,))
         messages = cursor.fetchall()
+        cursor.close()
 
         return {"source": "mysql", "messages": messages}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching messages: {e}") from e
-    finally:
-        cursor.close()
+        
