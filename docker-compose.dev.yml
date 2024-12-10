@@ -20,7 +20,7 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - /Database/dev:/var/lib/mysql
+      - D:\Projects\simple-thought-share-app\Database\dev:/var/lib/mysql
   redis:
     image: redis:latest  # Name of the image for Redis
     ports:

@@ -2,3 +2,4 @@ fastapi==0.100.0
 uvicorn[standard]==0.23.0
 mysql-connector-python==8.0.33
 redis==5.2.0
+APScheduler==3.10.4

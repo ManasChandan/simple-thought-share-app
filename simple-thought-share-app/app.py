@@ -9,6 +9,7 @@ import os
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from apscheduler.schedulers.background import BackgroundScheduler
 import mysql.connector
 import redis
 
@@ -88,12 +89,57 @@ class AppState:
 
 app = FastAPI()
 
+scheduler = BackgroundScheduler()
+
+def move_new_messages_to_mysql():
+    """
+    Transfer new messages from Redis to MySQL and delete them from Redis.
+    """
+    try:
+        cursor = app.state.mysql_db.cursor()
+
+        # Fetch all messages from Redis
+        redis_messages = app.state.redis_client.zrange("messages", 0, -1, withscores=True)
+        if not redis_messages:
+            print("No new messages to transfer.")
+            return
+
+        for msg, score in redis_messages:
+            data = json.loads(msg)
+            user_name = data["user_name"]
+            message = data["message"]
+            created_at = datetime.fromtimestamp(score, tz=timezone.utc)
+
+            # Insert into MySQL (skip duplicates)
+            query = """
+                INSERT INTO messages (user_name, message, created_at)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE id=id;
+            """
+            cursor.execute(query, (user_name, message, created_at))
+
+            # Remove the message from Redis after successful insertion
+            app.state.redis_client.zrem("messages", msg)
+
+        app.state.mysql_db.commit()
+        cursor.close()
+        print("Messages Moved to MySQL and Redis is Empty")
+    except mysql.connector.Error as e:
+        raise mysql.connector.Error(f"Error transferring messages: {e}") from e
+
+scheduler.add_job(
+    func=move_new_messages_to_mysql, 
+    trigger="interval",
+    minutes=2
+)
+
 @app.on_event("startup")
 async def startup():
     """
     Creates the object for the app state and stores the connection
     """
     app.state = AppState()
+    scheduler.start()
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -101,6 +147,7 @@ async def shutdown():
     Closing the connection on shut down
     """
     app.state.shut_down()
+    scheduler.shutdown()
 
 
 @app.get("/")
@@ -146,27 +193,30 @@ def fetch_messages(timestamp: str):
     """
     try:
         # Fetch from Redis
-        utc_timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc).timestamp()
+        messages = []
+        utc_time = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
+        utc_timestamp = utc_time.timestamp()
         print(utc_timestamp)
         redis_messages = app.state.redis_client.zrangebyscore("messages", "-inf", utc_timestamp, start=0, num=5)
         if redis_messages:
             messages = [json.loads(msg) for msg in redis_messages]
-            return {"source": "redis", "messages": messages}
+        
+        if redis_messages and len(messages) < 5:
 
-        cursor = app.state.mysql_db.cursor(dictionary=True)
+            cursor = app.state.mysql_db.cursor(dictionary=True)
 
-        query = """
-            SELECT user_name, message, UNIX_TIMESTAMP(created_at) AS timestamp
-            FROM messages
-            WHERE UNIX_TIMESTAMP(created_at) < %s
-            ORDER BY created_at DESC
-            LIMIT 5
-        """
-        cursor.execute(query, (timestamp,))
-        messages = cursor.fetchall()
-        cursor.close()
+            query = """
+                SELECT *
+                FROM messages
+                WHERE created_at < %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """
+            cursor.execute(query, (utc_time, 5-len(messages),))
+            messages_sql = cursor.fetchall()
+            messages.extend(messages_sql)
+            cursor.close()
 
-        return {"source": "mysql", "messages": messages}
+        return {"messages": messages}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching messages: {e}") from e
-        
