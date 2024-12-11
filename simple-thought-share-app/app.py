@@ -6,6 +6,7 @@ and potentially other functionalities related to message management.
 import time
 import json
 import os
+import pickle
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -45,7 +46,6 @@ class AppState:
     """
     @retry(retries=3, delay=10)
     def __init__(self):
-        print("127.0.0.1" if os.environ.get("env", "local_run") == "local_run" else "db")
         self.mysql_db = db = mysql.connector.connect(
         host="127.0.0.1" if os.environ.get("ENV", "local_run") == "local_run" else "db",  # This is the service name in Docker Compose
         port="3306",
@@ -96,6 +96,8 @@ def move_new_messages_to_mysql():
     Transfer new messages from Redis to MySQL and delete them from Redis.
     """
     try:
+        save_debug = []
+
         cursor = app.state.mysql_db.cursor()
 
         # Fetch all messages from Redis
@@ -106,6 +108,7 @@ def move_new_messages_to_mysql():
 
         for msg, score in redis_messages:
             data = json.loads(msg)
+            save_debug.append(data)
             user_name = data["user_name"]
             message = data["message"]
             created_at = datetime.fromtimestamp(score, tz=timezone.utc)
@@ -124,13 +127,18 @@ def move_new_messages_to_mysql():
         app.state.mysql_db.commit()
         cursor.close()
         print("Messages Moved to MySQL and Redis is Empty")
+
+        os.makedirs("Debug", exist_ok=True)
+        with open(f"Debug/messages_{int(datetime.now(timezone.utc).timestamp())}.pkl", 'wb') as file:
+            pickle.dump(save_debug, file)
+
     except mysql.connector.Error as e:
         raise mysql.connector.Error(f"Error transferring messages: {e}") from e
 
 scheduler.add_job(
     func=move_new_messages_to_mysql, 
     trigger="interval",
-    minutes=2
+    minutes=1
 )
 
 @app.on_event("startup")
@@ -201,7 +209,7 @@ def fetch_messages(timestamp: str):
         if redis_messages:
             messages = [json.loads(msg) for msg in redis_messages]
         
-        if redis_messages and len(messages) < 5:
+        if len(messages) < 5:
 
             cursor = app.state.mysql_db.cursor(dictionary=True)
 

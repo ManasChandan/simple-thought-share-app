@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     environment:
       - ENV=dev
+    volumes:
+      - .\Database\Debug\dev:/simple-thought-share-app/Debug
     depends_on:
       - db
       - redis
@@ -20,7 +22,7 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - D:\Projects\simple-thought-share-app\Database\dev:/var/lib/mysql
+      - .\Database\dev:/var/lib/mysql
   redis:
     image: redis:latest  # Name of the image for Redis
     ports:
